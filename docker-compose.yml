@@ -1,5 +1,9 @@
 version: "3.9"
 
+networks:
+  cetti-net:
+    driver: bridge
+
 services:
   postgres:
     image: postgres:15
@@ -8,18 +12,18 @@ services:
     environment:
       POSTGRES_DB: cetti
       POSTGRES_USER: cetti
-      POSTGRES_PASSWORD: cetti123
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+    networks:
+      - cetti-net
 
   redis:
     image: redis:7
     container_name: cetti-redis
     restart: always
-    ports:
-      - "6379:6379"
+    networks:
+      - cetti-net
 
   n8n:
     image: n8nio/n8n:latest
@@ -33,23 +37,43 @@ services:
       - DB_POSTGRESDB_PORT=5432
       - DB_POSTGRESDB_DATABASE=cetti
       - DB_POSTGRESDB_USER=cetti
-      - DB_POSTGRESDB_PASSWORD=cetti123
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
       - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=admin
-      - N8N_BASIC_AUTH_PASSWORD=admin123
-      - N8N_HOST=localhost
+      - N8N_BASIC_AUTH_USER=${N8N_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
+      - N8N_HOST=${PUBLIC_HOST}
       - N8N_PORT=5678
       - N8N_PROTOCOL=http
+      - WEBHOOK_URL=http://${PUBLIC_HOST}:5678/
       - GENERIC_TIMEZONE=America/Sao_Paulo
     volumes:
       - n8n_data:/home/node/.n8n
     depends_on:
       - postgres
       - redis
+    networks:
+      - cetti-net
 
-  # Chatwoot - subir somente quando fechar cliente que precise
-  # para subir o chatwoot, use o comando:
-  # docker-compose --profile advanced up -d chatwoot
+  evolution-api:
+    image: atendai/evolution-api:latest
+    container_name: cetti-evolution-api
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      - SERVER_URL=http://${PUBLIC_HOST}:8080
+      - API_KEY=${EVOLUTION_API_KEY}
+      - API_PREFIX=/api
+      - LOG_LEVEL=info
+      - CORS_ORIGIN=*
+      - DATABASE_CONNECTION_URI=postgresql://cetti:${POSTGRES_PASSWORD}@postgres:5432/cetti
+    volumes:
+      - evolution_data:/var/lib/evolution
+    depends_on:
+      - postgres
+    networks:
+      - cetti-net
+
   chatwoot:
     image: chatwoot/chatwoot:latest
     container_name: cetti-chatwoot
@@ -63,7 +87,10 @@ services:
       - redis
     profiles:
       - advanced
+    networks:
+      - cetti-net
 
 volumes:
   postgres_data:
   n8n_data:
+  evolution_data:
