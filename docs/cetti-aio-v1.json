@@ -1,0 +1,170 @@
+{
+  "name": "Cetti AIO v1 - Atendimento Inteligente",
+  "nodes": [
+    {
+      "id": "webhook_in",
+      "name": "Webhook Entrada WhatsApp",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [0, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cetti-aio-inbound",
+        "responseMode": "onReceived"
+      }
+    },
+    {
+      "id": "normalize",
+      "name": "Normalizar Mensagem",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "parameters": {
+        "functionCode": "return items.map(item => {\n  const msg = item.json;\n  return {\n    json: {\n      tenant_id: msg.tenant_id || 'demo',\n      user_phone: msg.from || 'unknown',\n      message: msg.text || msg.transcript || '',\n      message_type: msg.text ? 'text' : 'audio'\n    }\n  };\n});"
+      }
+    },
+    {
+      "id": "load_context",
+      "name": "Carregar Contexto do Cliente",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [520, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM tenants WHERE tenant_id={{$json.tenant_id}} LIMIT 1;"
+      }
+    },
+    {
+      "id": "aio_prompt",
+      "name": "Cetti AIO Engine",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [800, 300],
+      "parameters": {
+        "operation": "chat",
+        "model": "gpt-4o-mini",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Você é o Cetti AIO, Assistente Inteligente Operacional. Use sempre o contexto da empresa e responda com clareza, sem inventar informações."
+          },
+          {
+            "role": "user",
+            "content": "{{$json.message}}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "decision",
+      "name": "Decisão",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1050, 300],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "{{$json.text}}",
+              "operation": "contains",
+              "value2": "humano"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "log_db",
+      "name": "Registrar Log",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1300, 200],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO aio_interactions (tenant_id, channel, user_phone, message_type, user_message, ai_response, decision, created_at)\nVALUES (\n  {{$json.tenant_id}},\n  'whatsapp',\n  {{$json.user_phone}},\n  {{$json.message_type}},\n  {{$json.message}},\n  {{$json.text}},\n  'responded',\n  NOW()\n);"
+      }
+    },
+    {
+      "id": "send_reply",
+      "name": "Enviar Resposta WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1550, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.evolution.com/sendMessage",
+        "jsonParameters": true,
+        "options": {},
+        "bodyParametersJson": "{ \"to\": \"{{$json.user_phone}}\", \"message\": \"{{$json.text}}\" }"
+      }
+    }
+  ],
+  "connections": {
+    "Webhook Entrada WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "Normalizar Mensagem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalizar Mensagem": {
+      "main": [
+        [
+          {
+            "node": "Carregar Contexto do Cliente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Carregar Contexto do Cliente": {
+      "main": [
+        [
+          {
+            "node": "Cetti AIO Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cetti AIO Engine": {
+      "main": [
+        [
+          {
+            "node": "Decisão",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decisão": {
+      "main": [
+        [
+          {
+            "node": "Registrar Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registrar Log": {
+      "main": [
+        [
+          {
+            "node": "Enviar Resposta WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
