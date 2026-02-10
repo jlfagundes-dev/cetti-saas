@@ -1,96 +1,100 @@
 version: "3.9"
 
 networks:
-  cetti-net:
-    driver: bridge
+  traefik:
+    external: true
+  internal:
+    internal: true
 
 services:
+
+  traefik:
+    image: traefik:v2.11
+    container_name: traefik
+    command:
+      - "--api.dashboard=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.le.acme.httpchallenge=true"
+      - "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.le.acme.email=${EMAIL_SSL}"
+      - "--certificatesresolvers.le.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./volumes/letsencrypt:/letsencrypt
+    networks:
+      - traefik
+
   postgres:
     image: postgres:15
-    container_name: cetti-postgres
     restart: always
     environment:
-      POSTGRES_DB: cetti
-      POSTGRES_USER: cetti
+      POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./volumes/postgres:/var/lib/postgresql/data
     networks:
-      - cetti-net
+      - internal
 
   redis:
     image: redis:7
-    container_name: cetti-redis
     restart: always
     networks:
-      - cetti-net
+      - internal
 
   n8n:
     image: n8nio/n8n:latest
-    container_name: cetti-n8n
     restart: always
-    ports:
-      - "5678:5678"
     environment:
-      - DB_TYPE=postgresdb
-      - DB_POSTGRESDB_HOST=postgres
-      - DB_POSTGRESDB_PORT=5432
-      - DB_POSTGRESDB_DATABASE=cetti
-      - DB_POSTGRESDB_USER=cetti
-      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
-      - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=${N8N_USER}
-      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
-      - N8N_HOST=${PUBLIC_HOST}
-      - N8N_PORT=5678
-      - N8N_PROTOCOL=http
-      - WEBHOOK_URL=http://${PUBLIC_HOST}:5678/
-      - GENERIC_TIMEZONE=America/Sao_Paulo
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      QUEUE_BULL_REDIS_HOST: redis
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_HOST: n8n.${DOMAIN}
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: https://webhook.${DOMAIN}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.n8n.rule=Host(`n8n.${DOMAIN}`)"
+      - "traefik.http.routers.n8n.entrypoints=websecure"
+      - "traefik.http.routers.n8n.tls.certresolver=le"
     volumes:
-      - n8n_data:/home/node/.n8n
+      - ./volumes/n8n:/home/node/.n8n
     depends_on:
       - postgres
       - redis
     networks:
-      - cetti-net
+      - traefik
+      - internal
 
   evolution-api:
     image: atendai/evolution-api:latest
-    container_name: cetti-evolution-api
     restart: always
-    ports:
-      - "8080:8080"
     environment:
-      - SERVER_URL=http://${PUBLIC_HOST}:8080
-      - API_KEY=${EVOLUTION_API_KEY}
-      - API_PREFIX=/api
-      - LOG_LEVEL=info
-      - CORS_ORIGIN=*
-      - DATABASE_CONNECTION_URI=postgresql://cetti:${POSTGRES_PASSWORD}@postgres:5432/cetti
-    volumes:
-      - evolution_data:/var/lib/evolution
-    depends_on:
-      - postgres
-    networks:
-      - cetti-net
-
-  chatwoot:
-    image: chatwoot/chatwoot:latest
-    container_name: cetti-chatwoot
-    restart: always
-    env_file:
-      - chatwoot.env
-    ports:
-      - "3000:3000"
+      DATABASE_ENABLED: "true"
+      DATABASE_CONNECTION_URI: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URI: redis://redis:6379
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.evolution.rule=Host(`api.${DOMAIN}`)"
+      - "traefik.http.routers.evolution.entrypoints=websecure"
+      - "traefik.http.routers.evolution.tls.certresolver=le"
     depends_on:
       - postgres
       - redis
-    profiles:
-      - advanced
     networks:
-      - cetti-net
+      - traefik
+      - internal
 
-volumes:
-  postgres_data:
-  n8n_data:
-  evolution_data:
