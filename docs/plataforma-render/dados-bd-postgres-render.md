@@ -1,0 +1,6 @@
+hostname=dpg-d65oumh4tr6s73d7us0g-a
+port=5432
+database=cetti
+username=cetti
+password=qtsSafBWjnOkERhYy2N2EBvrd4hvncbk
+internalDataBaseURL=postgresql://cetti:qtsSafBWjnOkERhYy2N2EBvrd4hvncbk@dpg-d65oumh4tr6s73d7us0g-a/cetti
