@@ -11,6 +11,7 @@ services:
   traefik:
     image: traefik:v2.11
     container_name: traefik
+    restart: always
     command:
       - "--api.dashboard=true"
       - "--providers.docker=true"
@@ -36,7 +37,6 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - ./volumes/postgres:/var/lib/postgresql/data
     networks:
@@ -45,6 +45,9 @@ services:
   redis:
     image: redis:7
     restart: always
+    volumes:
+      - ./volumes/redis:/data
+    command: redis-server --appendonly yes
     networks:
       - internal
 
@@ -54,22 +57,23 @@ services:
     environment:
       DB_TYPE: postgresdb
       DB_POSTGRESDB_HOST: postgres
-      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB_N8N}
       DB_POSTGRESDB_USER: ${POSTGRES_USER}
       DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
       QUEUE_BULL_REDIS_HOST: redis
       N8N_BASIC_AUTH_ACTIVE: "true"
-      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER}
-      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD}
+      N8N_BASIC_AUTH_USER: ${N8N_USER}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_PASSWORD}
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
       N8N_HOST: n8n.${DOMAIN}
       N8N_PROTOCOL: https
-      WEBHOOK_URL: https://webhook.${DOMAIN}
+      WEBHOOK_URL: https://n8n.${DOMAIN}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.n8n.rule=Host(`n8n.${DOMAIN}`)"
       - "traefik.http.routers.n8n.entrypoints=websecure"
       - "traefik.http.routers.n8n.tls.certresolver=le"
+      - "traefik.http.services.n8n.loadbalancer.server.port=5678"
     volumes:
       - ./volumes/n8n:/home/node/.n8n
     depends_on:
@@ -84,17 +88,25 @@ services:
     restart: always
     environment:
       DATABASE_ENABLED: "true"
-      DATABASE_CONNECTION_URI: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB_EVOLUTION}
       REDIS_URI: redis://redis:6379
+      API_KEY: ${EVOLUTION_API_KEY}
+      AUTHENTICATION_TYPE: apikey
+      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
+      SERVER_URL: https://api.${DOMAIN}
+      SESSION_RESTORE: "true"
+      LOG_LEVEL: info
+      TZ: America/Sao_Paulo
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.evolution.rule=Host(`api.${DOMAIN}`)"
       - "traefik.http.routers.evolution.entrypoints=websecure"
       - "traefik.http.routers.evolution.tls.certresolver=le"
+      - "traefik.http.services.evolution.loadbalancer.server.port=8080"
     depends_on:
       - postgres
       - redis
     networks:
       - traefik
       - internal
-
