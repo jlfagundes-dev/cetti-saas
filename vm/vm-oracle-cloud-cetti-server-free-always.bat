@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-set "HOST=141.148.19.92"
+set "HOST=129.159.178.175"
 set "USER=ubuntu"
 
 rem Caminho absoluto principal da sua chave
