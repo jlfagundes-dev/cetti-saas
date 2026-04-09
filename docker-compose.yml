@@ -30,20 +30,7 @@ services:
       - ./volumes/letsencrypt:/letsencrypt
     networks:
       - traefik
-    labels:
-      - "traefik.enable=true"
-
-      # HTTP
-      - "traefik.http.routers.n8n.rule=Host(`n8n.${DOMAIN}`)"
-      - "traefik.http.routers.n8n.entrypoints=web"
-      - "traefik.http.services.n8n.loadbalancer.server.port=5678"
-
-      # HTTPS
-      - "traefik.http.routers.n8n-secure.rule=Host(`n8n.${DOMAIN}`)"
-      - "traefik.http.routers.n8n-secure.entrypoints=websecure"
-      - "traefik.http.routers.n8n-secure.tls.certresolver=le"
-      - "traefik.http.services.n8n-secure.loadbalancer.server.port=5678"
-
+    
   postgres:
     image: postgres:15
     restart: always
