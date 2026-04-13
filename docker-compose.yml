@@ -110,3 +110,27 @@ services:
     networks:
       - traefik
       - internal
+
+  chatwoot:
+    image: chatwoot/chatwoot:latest
+    restart: always
+    environment:
+      RAILS_ENV: production
+      POSTGRES_HOST: postgres
+      POSTGRES_USERNAME: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DATABASE: ${POSTGRES_DB_CHAT}
+      REDIS_URL: redis://redis:6379
+      FRONTEND_URL: https://chat.${DOMAIN}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.chatwoot.rule=Host(`chat.${DOMAIN}`)"
+      - "traefik.http.routers.chatwoot.entrypoints=websecure"
+      - "traefik.http.routers.chatwoot.tls.certresolver=le"
+      - "traefik.http.services.chatwoot.loadbalancer.server.port=3000"
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - traefik
+      - internal
