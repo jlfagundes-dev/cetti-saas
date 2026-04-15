@@ -1,0 +1,118 @@
+version: "3.9"
+
+networks:
+  internal:
+    internal: true
+  external:
+    external: false
+
+services:
+
+  postgres:
+    image: ankane/pgvector:latest # versão que tem pgvector pra funcionar o chatwoot
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./volumes/postgres:/var/lib/postgresql/data
+    networks:
+      - internal
+
+  redis:
+    image: redis:7
+    restart: always
+    volumes:
+      - ./volumes/redis:/data
+    command: redis-server --appendonly yes
+    networks:
+      - internal
+
+  n8n:
+    image: n8nio/n8n:latest
+    restart: always
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB_N8N}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      QUEUE_BULL_REDIS_HOST: redis
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_USER}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_PASSWORD}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_HOST: n8n.${DOMAIN}
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: https://n8n.${DOMAIN}
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      N8N_GIT_NODE_DISABLE_BARE_REPOS: "true"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+    ports:
+      - "5678:5678"
+    volumes:
+      - ./volumes/n8n:/home/node/.n8n
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - internal
+      - external
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+
+  evolution-api:
+    image: atendai/evolution-api:latest
+    restart: always
+    environment:
+      DATABASE_ENABLED: "true"
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB_EVOLUTION}
+      REDIS_URI: redis://redis:6379
+      API_KEY: ${EVOLUTION_API_KEY}
+      AUTHENTICATION_TYPE: apikey
+      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
+      SERVER_URL: https://api.${DOMAIN}
+      SESSION_RESTORE: "true"
+      LOG_LEVEL: info
+      TZ: America/Sao_Paulo
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - internal
+      - external
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+
+  chatwoot:
+    image: chatwoot/chatwoot:latest
+    restart: always
+    environment:
+      RAILS_ENV: production
+      INSTALLATION_ENV: docker
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      POSTGRES_HOST: postgres
+      POSTGRES_USERNAME: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DATABASE: ${POSTGRES_DB_CHAT}
+      REDIS_URL: redis://redis:6379
+      FRONTEND_URL: https://chat.${DOMAIN}
+      BACKEND_URL: https://chat.${DOMAIN}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - internal
+      - external
+    command: sh -c "bundle exec rails db:prepare && bundle exec rails s -b 0.0.0.0 -p 3000"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
