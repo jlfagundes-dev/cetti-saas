@@ -1,118 +1,199 @@
-version: "3.9"
-
-networks:
-  internal:
-    internal: true
-  external:
-    external: false
-
 services:
-
+  # PostgreSQL Database com suporte a Vetores (IA)
   postgres:
-    image: ankane/pgvector:latest # versão que tem pgvector pra funcionar o chatwoot
-    restart: always
+    image: pgvector/pgvector:pg16 # DB com extensão vector para embeddings (necessário para IA)
+    container_name: postgres
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres123}
+      POSTGRES_DB: ${POSTGRES_DB:-n8n}
     volumes:
-      - ./volumes/postgres:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
     networks:
-      - internal
+      - app_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-n8n}"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
 
+  # Inicializa o banco do Chatwoot e a extensão vector antes de subir a aplicação
+  postgres-init:
+    image: pgvector/pgvector:pg16 # Usa mesma imagem do DB para ter acesso aos binários
+    container_name: postgres-init
+    restart: "no" # Executa UMA ÚNICA VEZ na inicialização
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres123}
+      POSTGRES_DB: ${POSTGRES_DB:-n8n}
+      POSTGRES_DB_CHAT: ${POSTGRES_DB_CHAT:-chatwoot}
+    networks:
+      - app_network
+    depends_on:
+      postgres:
+        condition: service_healthy # Aguarda Postgres estar pronto
+    volumes:
+      - ./docker-compose/postgres-init.sh:/scripts/postgres-init.sh:ro # Script que cria DB do Chatwoot
+    command: sh /scripts/postgres-init.sh # Executa o script de inicialização
+
+  # Redis
   redis:
-    image: redis:7
-    restart: always
+    image: redis:7.2-alpine
+    container_name: redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-redis123}"] # Senha obrigatória para conexão
     volumes:
-      - ./volumes/redis:/data
-    command: redis-server --appendonly yes
+      - redis_data:/data
+    ports:
+      - "6379:6379"
     networks:
-      - internal
+      - app_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis123}", "ping"] # Valida conectividade com autenticação
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
+  # n8n Main - Orquestrador de Automações
   n8n:
-    image: n8nio/n8n:latest
-    restart: always
+    image: n8nio/n8n:1.119.1
+    container_name: n8n
+    restart: unless-stopped
     environment:
-      DB_TYPE: postgresdb
-      DB_POSTGRESDB_HOST: postgres
-      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB_N8N}
-      DB_POSTGRESDB_USER: ${POSTGRES_USER}
-      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
-      QUEUE_BULL_REDIS_HOST: redis
-      N8N_BASIC_AUTH_ACTIVE: "true"
-      N8N_BASIC_AUTH_USER: ${N8N_USER}
-      N8N_BASIC_AUTH_PASSWORD: ${N8N_PASSWORD}
-      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
-      N8N_HOST: n8n.${DOMAIN}
-      N8N_PROTOCOL: http
-      WEBHOOK_URL: https://n8n.${DOMAIN}
-      N8N_RUNNERS_ENABLED: "true"
-      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
-      N8N_GIT_NODE_DISABLE_BARE_REPOS: "true"
-      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB:-n8n}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER:-postgres}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-postgres123}
+      - QUEUE_BULL_REDIS_HOST=redis
+      - QUEUE_BULL_REDIS_PORT=6379
+      - QUEUE_BULL_REDIS_PASSWORD=${REDIS_PASSWORD:-redis123} # Autenticação em Redis
+      - EXECUTIONS_MODE=queue # Usa Redis para fila de execuções (escalável)
+      - N8N_HOST=${N8N_HOST:-host.docker.internal}
+      - N8N_PORT=${N8N_PORT:-5678}
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-http}
+      - WEBHOOK_URL=${N8N_WEBHOOK_URL:-http://host.docker.internal:5678/}
+      - GENERIC_TIMEZONE=${N8N_TIMEZONE:-America/Sao_Paulo}
     ports:
       - "5678:5678"
     volumes:
-      - ./volumes/n8n:/home/node/.n8n
-    depends_on:
-      - postgres
-      - redis
+      - n8n_data:/home/node/.n8n
     networks:
-      - internal
-      - external
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
+      - app_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
-  evolution-api:
-    image: atendai/evolution-api:latest
-    restart: always
+  # n8n Worker - Processa Filas de Execução
+  n8n-worker:
+    image: n8nio/n8n:1.119.1
+    container_name: n8n-worker
+    restart: unless-stopped
+    command: worker # Modo worker para processar jobs da fila Redis
     environment:
-      DATABASE_ENABLED: "true"
-      DATABASE_PROVIDER: postgresql
-      DATABASE_CONNECTION_URI: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB_EVOLUTION}
-      REDIS_URI: redis://redis:6379
-      API_KEY: ${EVOLUTION_API_KEY}
-      AUTHENTICATION_TYPE: apikey
-      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
-      SERVER_URL: http://localhost:8080
-      SESSION_RESTORE: "true"
-      LOG_LEVEL: info
-      TZ: America/Sao_Paulo
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB:-n8n}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER:-postgres}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-postgres123}
+      - QUEUE_BULL_REDIS_HOST=redis
+      - QUEUE_BULL_REDIS_PORT=6379
+      - QUEUE_BULL_REDIS_PASSWORD=${REDIS_PASSWORD:-redis123}
+      - EXECUTIONS_MODE=queue
+      - GENERIC_TIMEZONE=${N8N_TIMEZONE:-America/Sao_Paulo}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - app_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Evolution API - Integrações com WhatsApp e Canais
+  evolution:
+    image: evoapicloud/evolution-api:v2.3.6
+    container_name: evolution_api
+    restart: unless-stopped
+    environment:
+      - SERVER_TYPE=http
+      - SERVER_PORT=${EVOLUTION_PORT:-8080}
+      - SERVER_URL=${EVOLUTION_SERVER_URL:-}
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres123}@postgres:5432/${EVOLUTION_DB_NAME:-evolution}?schema=public # DB separado para Evolution
+      - CACHE_REDIS_ENABLED=true # Habilita cache distribuído
+      - CACHE_REDIS_URI=redis://:${REDIS_PASSWORD:-redis123}@redis:6379 # URI com senha em formato padrão
+      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-evolution_api_key_12345} # Chave para autenticar requisições
+      - CHATWOOT_ENABLED=true # Ativado conforme seu pedido de histórico
+      - TZ=America/Sao_Paulo
     ports:
       - "8080:8080"
-    depends_on:
-      - postgres
-      - redis
+    volumes:
+      - evolution_instances:/evolution/instances
+      - evolution_store:/evolution/store
     networks:
-      - internal
-      - external
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
+      - app_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
+  # Chatwoot - Painel de Atendimento Unificado
   chatwoot:
     image: chatwoot/chatwoot:latest
-    restart: always
+    container_name: chatwoot
+    restart: unless-stopped
     environment:
-      RAILS_ENV: production
-      INSTALLATION_ENV: docker
-      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
-      POSTGRES_HOST: postgres
-      POSTGRES_USERNAME: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DATABASE: ${POSTGRES_DB_CHAT}
-      REDIS_URL: redis://redis:6379
-      FRONTEND_URL: https://chat.${DOMAIN}
-      BACKEND_URL: https://chat.${DOMAIN}
+      - RAILS_ENV=${RAILS_ENV:-production}
+      - INSTALLATION_ENV=${INSTALLATION_ENV:-docker}
+      - SECRET_KEY_BASE=${SECRET_KEY_BASE}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DATABASE=${POSTGRES_DB_CHAT:-chatwoot} # Database criado pelo postgres-init
+      - POSTGRES_USERNAME=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres123}
+      - REDIS_URL=redis://:Cetti%40redis_2026%21@redis:6379/1 # CRÍTICO: Senha URL-ENCODED %40=@ %21=!
+      - FRONTEND_URL=${FRONTEND_URL}
+      - BACKEND_URL=${BACKEND_URL}
+      - NODE_ENV=production
     ports:
       - "3000:3000"
-    depends_on:
-      - postgres
-      - redis
     networks:
-      - internal
-      - external
-    command: sh -c "bundle exec rails db:prepare && bundle exec rails s -b 0.0.0.0 -p 3000"
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
+      - app_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully # So sobe depois do script de init do Postgres terminar
+      redis:
+        condition: service_healthy
+    volumes:
+      - chatwoot_data:/app/storage # Persistencia de arquivos do Chatwoot
+      - ./docker-compose/chatwoot-bootstrap.sh:/scripts/chatwoot-bootstrap.sh:ro # Script de primeiro boot
+    command: sh -c "bundle exec rails db:chatwoot_prepare && sh /scripts/chatwoot-bootstrap.sh && bundle exec rails s -b 0.0.0.0 -p 3000" # 1) prepara DB 2) roda bootstrap 3) inicia web
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  n8n_data:
+    driver: local
+  evolution_instances:
+    driver: local
+  evolution_store:
+    driver: local
+  chatwoot_data:
+    driver: local
+
+networks:
+  app_network:
+    driver: bridge
